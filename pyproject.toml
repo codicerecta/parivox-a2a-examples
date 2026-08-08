@@ -1,0 +1,15 @@
+# Repository-wide lint/format configuration. Each agent is otherwise standalone:
+# its own requirements.txt, its own Dockerfile, its own stack.
+
+[tool.ruff]
+# Containers run 3.13; local development commonly runs 3.11. Target the floor so
+# code stays valid on both.
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["agents"]

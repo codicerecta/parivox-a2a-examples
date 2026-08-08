@@ -1,0 +1,37 @@
+# Secrets — never commit. Patterns are deliberately broad: a single committed
+# credential forces a history rewrite, which is the one irreversible mistake
+# this repository can make. Verify additions with `git check-ignore -v <file>`.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+credentials
+credentials.json
+secrets.json
+samconfig.toml
+samconfig.yaml
+samconfig.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# AWS SAM / CloudFormation build output
+.aws-sam/
+packaged.yaml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
