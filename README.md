@@ -87,6 +87,22 @@ a local container:
 ./run_tck.py --sut-host http://localhost:8080 --transport jsonrpc --level must
 ```
 
+**What "passing the TCK" does and does not mean here.** The `must` level is not purely a
+protocol check. Per the TCK's own [`docs/SUT_REQUIREMENTS.md`](https://github.com/a2aproject/a2a-tck/blob/main/docs/SUT_REQUIREMENTS.md),
+a number of its tests drive prescribed behaviour through magic `messageId` prefixes — the
+agent is expected to return an artifact whose text is exactly `Generated text content`, a
+file named `output.txt`, a data part of `{"key": "value", "count": 42}`, and to enter
+`INPUT_REQUIRED` on cue. Those tests assert that an agent behaves like the TCK's own
+reference SUT; they are not statements about protocol conformance, and implementing them
+would mean shipping test-harness branches inside an example agent.
+
+CI therefore enforces the protocol-level subset — 67 `must` tests covering card discovery,
+task lifecycle, streaming order, error-code mapping, and cancellation — and deselects the
+scenario-fixture tests explicitly, with the reasoning recorded in
+[`ci.yml`](.github/workflows/ci.yml). Note also that the TCK's headline compatibility
+percentage counts unimplemented fixture scenarios against the agent, so that number reads
+lower than the enforced result.
+
 ## Deployment
 
 Each agent has its own CloudFormation stack under `infra/` and deploys as a single-replica

@@ -1,0 +1,129 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned to a reviewed commit. The TCK is a moving target and an unpinned clone
+  # turns an upstream edit into a red build on an unrelated PR.
+  TCK_REF: 5996b79f9cefa6fc390980e383e358a66fb9e49e
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [research-specialist-sdk]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: agents/${{ matrix.agent }}/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: agents/${{ matrix.agent }}
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        working-directory: agents/${{ matrix.agent }}
+        run: python -m pytest -q
+
+  conformance:
+    # Conformance is a property of the code, not of a deployment. The deployed
+    # services are VPC-internal and unreachable from a runner, so the TCK runs
+    # against the image built here — which also makes it a per-commit gate.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [research-specialist-sdk]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build image
+        run: docker build -t ${{ matrix.agent }}:ci agents/${{ matrix.agent }}
+
+      - name: Start agent
+        run: |
+          set -euo pipefail
+          docker run -d --name sut -p 8080:8080 \
+            -e A2A_ALLOW_ANONYMOUS=1 \
+            ${{ matrix.agent }}:ci
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8080/healthz >/dev/null; then
+              echo "agent is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::agent did not become healthy"
+          docker logs sut
+          exit 1
+
+      - name: Check out the A2A TCK
+        uses: actions/checkout@v6
+        with:
+          repository: a2aproject/a2a-tck
+          ref: ${{ env.TCK_REF }}
+          path: a2a-tck
+
+      - name: Install the TCK
+        working-directory: a2a-tck
+        run: pip install -e .
+
+      # Scope note — deliberate, not a workaround.
+      #
+      # The TCK's `must` level is not purely a protocol check. Per its own
+      # docs/SUT_REQUIREMENTS.md, several tests drive prescribed fixture behaviour
+      # through magic `messageId` prefixes: the SUT is expected to return an
+      # artifact whose text is exactly "Generated text content", a file named
+      # output.txt, a data part of {"key": "value", "count": 42}, and to enter
+      # INPUT_REQUIRED on cue. Those assert that an agent behaves like the TCK's
+      # reference SUT, not that it speaks A2A correctly, and implementing them
+      # would mean shipping test-harness branches inside an example agent.
+      #
+      # test_content_type_not_supported_error is excluded separately: it posts a
+      # Python dict repr (single quotes) as the body, so a server that parses
+      # strictly answers -32700 ParseError before it can reach a content-type
+      # check. Answering -32005 there would require accepting malformed JSON.
+      #
+      # Everything else at `must` is enforced: 67 tests covering card discovery,
+      # task lifecycle, streaming order, error codes, and cancellation.
+      - name: Run TCK (must level, JSON-RPC)
+        working-directory: a2a-tck
+        run: |
+          python run_tck.py --sut-host http://localhost:8080 \
+            --transport jsonrpc --level must -- \
+            --deselect tests/compatibility/core_operations/test_artifacts.py \
+            --deselect "tests/compatibility/jsonrpc/test_error_codes.py::TestJsonRpcErrorCodeMappings::test_content_type_not_supported_error"
+
+      - name: Agent logs
+        if: always()
+        run: docker logs sut || true
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tck-report-${{ matrix.agent }}
+          path: a2a-tck/reports/
+          if-no-files-found: ignore

@@ -10,6 +10,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 
+[tool.ruff.lint.isort]
+# Each agent is its own root package named `app`; without this ruff treats it as
+# third-party and fights the import ordering in every test file.
+known-first-party = ["app"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["agents"]

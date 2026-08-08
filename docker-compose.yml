@@ -1,0 +1,13 @@
+# Local development and conformance runs. Deployment is CloudFormation, not compose.
+services:
+  research-specialist-sdk:
+    build: ./agents/research-specialist-sdk
+    ports:
+      - "8080:8080"
+    environment:
+      # Anonymous by default so `docker compose up` just works locally. Deployed
+      # instances always set A2A_API_KEY.
+      A2A_ALLOW_ANONYMOUS: "1"
+      PUBLIC_URL: "http://localhost:8080/"
+      # Passed through when present; absent, the agent serves canned content.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"

@@ -1,0 +1,6 @@
+# Pinned exactly. This service is deployed as a single replica and its transport
+# behaviour is version-sensitive (see README protocol notes) — a floating pin here
+# turns a protocol regression into a mystery.
+a2a-sdk[http-server]==1.1.2
+openai==2.53.0
+uvicorn==0.52.1
