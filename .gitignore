@@ -19,7 +19,9 @@ samconfig.yml
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+# Suffixed too (.venv-test, .venv313): a bare `.venv/` matches by exact name,
+# and this repo is meant to go public, so a stray virtualenv is a real hazard.
+.venv*/
 venv/
 .pytest_cache/
 .ruff_cache/

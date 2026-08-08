@@ -37,6 +37,7 @@ def build_app(settings: Settings) -> Starlette:
         openai_api_key=settings.openai_api_key,
         model=settings.model,
         max_sources=settings.max_sources,
+        canned_delay_seconds=settings.canned_delay_seconds,
     )
     handler = DefaultRequestHandler(
         agent_executor=ResearchExecutor(provider),

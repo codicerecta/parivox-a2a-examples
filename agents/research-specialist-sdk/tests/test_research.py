@@ -89,3 +89,18 @@ def test_build_provider_falls_back_to_canned_without_a_key():
 def test_build_provider_uses_openai_when_a_key_is_present():
     provider = build_provider(openai_api_key="sk-test", model="m", max_sources=3)
     assert isinstance(provider, OpenAIResearchProvider)
+
+
+def test_build_provider_passes_the_canned_delay_through():
+    provider = build_provider(
+        openai_api_key=None, model="m", max_sources=3, canned_delay_seconds=2.5
+    )
+    assert isinstance(provider, CannedResearchProvider)
+    assert provider._delay == 2.5
+
+
+def test_build_provider_ignores_the_canned_delay_when_a_key_is_present():
+    provider = build_provider(
+        openai_api_key="sk-test", model="m", max_sources=3, canned_delay_seconds=2.5
+    )
+    assert isinstance(provider, OpenAIResearchProvider)
