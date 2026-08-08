@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  A2A research specialist - single-replica ECS Fargate service, reachable only from
+  an allowed client security group via AWS Cloud Map private DNS. No load balancer,
+  no public listener.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: parivox-a2a-research-sdk
+    Description: Name prefix for stack resources. Must start with parivox-a2a- to match the deploy role.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC the client agent runs in. Discovery only works within this VPC.
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the task ENI. Must be in VpcId.
+  ClientSecurityGroupId:
+    Type: String
+    Description: >-
+      The ONLY security group allowed to reach this service. This is the enforcement
+      point for "never publicly exposed" - see a2a-python #1159.
+  ContainerImageUri:
+    Type: String
+    Description: ECR image URI including tag.
+  ApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the shared A2A API key.
+  OpenAiSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager ARN holding the OpenAI API key. Empty serves canned content.
+  DiscoveryNamespaceName:
+    Type: String
+    Default: research-sdk.a2a.internal
+    Description: Private DNS namespace created by this stack. Must be unique in the VPC.
+  DiscoveryServiceName:
+    Type: String
+    Default: agent
+    Description: Service name within the namespace. Full DNS is <service>.<namespace>.
+  ContainerPort:
+    Type: Number
+    Default: 8080
+  Cpu:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024, 2048]
+  Memory:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096]
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+
+Conditions:
+  HasOpenAiSecret: !Not [!Equals [!Ref OpenAiSecretArn, '']]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ServiceName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ServiceName
+
+  # Ingress is restricted to one security group. There is deliberately no rule
+  # allowing 0.0.0.0/0: a2a-python #1159 is an unpatched live-task owner-isolation
+  # bypass, so anything that can reach this port can act on another caller's tasks.
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'A2A specialist ${ServiceName} - ingress only from the allowed client SG.'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ClientSecurityGroupId
+          Description: A2A client agent tasks
+      SecurityGroupEgress:
+        # Outbound is open: the agent calls the model provider and pulls its image.
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Model provider APIs, ECR, CloudWatch Logs
+
+  DiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Ref DiscoveryNamespaceName
+      Vpc: !Ref VpcId
+      Description: !Sub 'Private DNS for ${ServiceName}. Resolvable only inside the VPC.'
+
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: !Ref DiscoveryServiceName
+      NamespaceId: !GetAtt DiscoveryNamespace.Id
+      DnsConfig:
+        NamespaceId: !GetAtt DiscoveryNamespace.Id
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 15
+      # ECS manages registration and deregistration; a container health check
+      # failure pulls the instance out of DNS.
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # Pulls the image, writes logs, and reads exactly the two secrets it injects.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ServiceName}-exec'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-own-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !If
+                  - HasOpenAiSecret
+                  - [!Ref ApiKeySecretArn, !Ref OpenAiSecretArn]
+                  - [!Ref ApiKeySecretArn]
+
+  # The container itself needs no AWS access at all. An empty role makes that
+  # explicit rather than leaving it to inheritance.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ServiceName}-task'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ServiceName
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: agent
+          Image: !Ref ContainerImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment:
+            - Name: PORT
+              Value: !Ref ContainerPort
+            # Advertised in the Agent Card as the RPC endpoint. Clients read this,
+            # so it has to match the Cloud Map name exactly.
+            - Name: PUBLIC_URL
+              Value: !Sub 'http://${DiscoveryServiceName}.${DiscoveryNamespaceName}:${ContainerPort}/'
+          Secrets: !If
+            - HasOpenAiSecret
+            - - Name: A2A_API_KEY
+                ValueFrom: !Ref ApiKeySecretArn
+              - Name: OPENAI_API_KEY
+                ValueFrom: !Ref OpenAiSecretArn
+            - - Name: A2A_API_KEY
+                ValueFrom: !Ref ApiKeySecretArn
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub 'python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(''http://127.0.0.1:${ContainerPort}/healthz'', timeout=2).status==200 else 1)"'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 15
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      # Single replica, deliberately. a2a-python #1135: a custom QueueManager is
+      # silently ignored by the v2 handler, so streaming and resubscription break
+      # across replicas. Raising this needs that issue resolved first.
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 200
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Required to reach ECR and the model provider: these are public subnets
+          # with no NAT gateway. It does NOT make the service reachable - the
+          # security group above admits only the client SG, and there is no
+          # listener exposed to the internet.
+          AssignPublicIp: ENABLED
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: !Ref SubnetIds
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+
+Outputs:
+  AgentCardUrl:
+    Description: Agent Card URL. Resolvable only from inside the VPC.
+    Value: !Sub 'http://${DiscoveryServiceName}.${DiscoveryNamespaceName}:${ContainerPort}/.well-known/agent-card.json'
+  RpcUrl:
+    Description: A2A JSON-RPC endpoint to configure on the calling agent.
+    Value: !Sub 'http://${DiscoveryServiceName}.${DiscoveryNamespaceName}:${ContainerPort}/'
+  ServiceSecurityGroupId:
+    Value: !Ref ServiceSecurityGroup
+  ClusterName:
+    Value: !Ref Cluster
+  LogGroupName:
+    Value: !Ref LogGroup
