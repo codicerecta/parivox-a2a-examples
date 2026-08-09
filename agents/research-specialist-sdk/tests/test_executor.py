@@ -159,3 +159,106 @@ async def test_progress_events_are_working_status_updates(progress_count):
         and e.status.message.parts
     ]
     assert len(with_message) == progress_count
+
+
+class SlowProvider:
+    """Goes quiet for longer than a client's between-event read timeout.
+
+    This is the shape of a real web-search run, which the canned provider cannot
+    reproduce: it emits on a fixed schedule by construction, so it never leaves a
+    gap in the first place.
+    """
+
+    def __init__(self, quiet_seconds: float) -> None:
+        self._quiet = quiet_seconds
+
+    async def research(
+        self, question: str, permitted_context: Sequence[str]
+    ) -> AsyncIterator[ResearchEvent]:
+        import asyncio
+
+        yield ResearchEvent(kind="progress", text="searching the web (1)")
+        await asyncio.sleep(self._quiet)
+        yield ResearchEvent(kind="report", text="# Report", sources=[])
+
+
+def status_messages(queue: FakeEventQueue) -> list[str]:
+    """Text of every status update, empty string for message-less ones."""
+    out = []
+    for event in queue.events:
+        if isinstance(event, pb.TaskStatusUpdateEvent):
+            parts = list(event.status.message.parts) if event.status.HasField("message") else []
+            out.append(" ".join(p.text for p in parts))
+    return out
+
+
+async def test_a_quiet_provider_still_emits_keepalive_events():
+    # Without this the stream survives only as long as the model stays chatty,
+    # and one long web-search call ends the delegation with the caller
+    # announcing failure for work that was proceeding normally.
+    queue = FakeEventQueue()
+    await ResearchExecutor(
+        SlowProvider(quiet_seconds=0.3), heartbeat_interval_seconds=0.05
+    ).execute(FakeContext(), queue)
+
+    sequence = states(queue)
+    assert sequence[-1] == "TASK_STATE_COMPLETED"
+    working = [s for s in sequence if s == "TASK_STATE_WORKING"]
+    assert len(working) >= 4, f"expected keepalives during the quiet stretch, got {sequence}"
+
+
+async def test_keepalives_carry_no_message():
+    # Clients render progress from the message text, so a keepalive with a
+    # message would put a meaningless line in front of a participant every
+    # interval. It exists to reset a read timeout, not to say anything.
+    queue = FakeEventQueue()
+    await ResearchExecutor(
+        SlowProvider(quiet_seconds=0.3), heartbeat_interval_seconds=0.05
+    ).execute(FakeContext(), queue)
+
+    messages = status_messages(queue)
+    assert "searching the web (1)" in messages
+    assert messages.count("") >= 3, f"expected message-less keepalives, got {messages}"
+
+
+async def test_a_chatty_provider_emits_no_keepalives():
+    queue = FakeEventQueue()
+    await ResearchExecutor(
+        CannedResearchProvider(), heartbeat_interval_seconds=30
+    ).execute(FakeContext(), queue)
+
+    # Two message-less status updates are structural — start_work() and the
+    # terminal complete(). Anything past those is a keepalive fired against a
+    # provider that never went quiet.
+    messages = status_messages(queue)
+    assert messages.count("") == 2, messages
+    assert "searching for current sources" in messages
+
+
+async def test_provider_failure_still_terminates_with_heartbeats_enabled():
+    # The producer runs in its own task now, so an exception has to be forwarded
+    # rather than raised where the caller's `except` used to see it directly.
+    queue = FakeEventQueue()
+    await ResearchExecutor(ExplodingProvider(), heartbeat_interval_seconds=0.05).execute(
+        FakeContext(), queue
+    )
+
+    assert states(queue)[-1] == "TASK_STATE_FAILED"
+
+
+async def test_the_provider_generator_is_closed_when_the_run_ends():
+    closed: dict[str, bool] = {"value": False}
+
+    class ClosingProvider:
+        async def research(self, question, permitted_context):
+            try:
+                yield ResearchEvent(kind="report", text="# done", sources=[])
+            finally:
+                closed["value"] = True
+
+    queue = FakeEventQueue()
+    await ResearchExecutor(ClosingProvider(), heartbeat_interval_seconds=0.05).execute(
+        FakeContext(), queue
+    )
+
+    assert closed["value"], "an interrupted provider stream must not leak its connection"
