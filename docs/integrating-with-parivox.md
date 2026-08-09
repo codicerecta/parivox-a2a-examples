@@ -52,16 +52,35 @@ with a timeout — awaiting the next item commits you to waiting however long th
 This keeps a *live* task alive. It is not a way to keep a stuck one alive forever; the
 caller still enforces a wall-clock bound.
 
-### Send the report as one complete artifact, before the terminal status
+### Send the report before the terminal status
 
-Two separate traps, both of which produce "the agent completed but returned nothing":
+**The client stops reading at the first terminal event.** An artifact emitted after
+`TASK_STATE_COMPLETED` is never seen, and the delegation is announced as a failure. Emit
+the artifact, *then* the terminal status.
 
-- **The client stops reading at the first terminal event.** An artifact emitted after
-  `TASK_STATE_COMPLETED` is never seen. Emit the artifact, *then* the terminal status.
-- **Artifact chunks are not reassembled.** Parivox keeps the most recent artifact it saw
-  rather than concatenating a sequence of them, so a report streamed in five parts arrives
-  as only the fifth. See "Known client constraints" below — this one is ours, not the
-  specification's.
+### Chunk the artifact if you want to, but close it with `lastChunk`
+
+Streaming one artifact across several `artifactUpdate` frames is supported: the first frame
+carries the artifact, each continuation sets `append: true`, and the last sets
+`lastChunk: true`. Parivox concatenates the fragments per `artifactId` and delivers the
+whole report. (Until August 2026 it did not — it kept the newest frame, so a report streamed
+in five parts arrived as only the fifth. If you are reading an older copy of this guide that
+says "send one complete artifact", that is why.)
+
+Three things to get right:
+
+- **`append` and `lastChunk` go on the update, beside `artifact`** — not inside the
+  artifact object. An `append` that lands in the wrong place reads as a fresh artifact and
+  replaces everything before it.
+- **Keep the `artifactId` stable across the chunks.** It is the key the fragments are
+  reassembled under. Frames with different ids are treated as different documents, and the
+  most recently updated one is what reaches the room.
+- **Fragments are joined verbatim, with no separator inserted.** Put your own whitespace in:
+  if a boundary falls between two words or two markdown blocks, the space or newline has to
+  be in one of the fragments.
+
+A chunked artifact that never receives its `lastChunk` is still delivered — partial text
+beats nothing — but it is logged and flagged in the audit event as incomplete.
 
 ### Always reach a terminal state, and never complete empty
 
@@ -168,8 +187,11 @@ These are limitations of the current Parivox client, not rules of the protocol. 
 listed separately because the specification permits what they forbid, and a developer
 reading only the specification will walk into them.
 
-- **Artifact chunking is not supported.** `append` and `lastChunk` are ignored; the most
-  recently received artifact wins. Send one complete artifact.
+- **The reassembled report is capped.** Chunks are accumulated up to a ceiling a little
+  above the 12,000-character chat limit and then dropped, so chunking is not a way to
+  deliver a longer report than a single artifact could. Bound your own output.
+- **At most eight artifacts are tracked per delegation.** Past that the least recently
+  updated buffer is discarded. One report is the expected shape.
 - **No resubscription and no retry.** If the connection dies mid-task the delegation is
   abandoned and announced as a failure. It will not reconnect, and it will not call
   `SubscribeToTask` to resume, so a task that survives on your side is not recoverable.
@@ -186,7 +208,8 @@ reading only the specification will walk into them.
 - [ ] `X-API-Key` (or another fixed header) accepted on RPC calls
 - [ ] Keepalive status emitted every ~20s, with no message part
 - [ ] Progress lines are short, human-readable, one per meaningful step
-- [ ] Exactly one complete artifact, markdown, emitted before the terminal status
+- [ ] One markdown artifact, emitted before the terminal status — whole, or chunked under a
+      stable `artifactId` and closed with `lastChunk`
 - [ ] Every path reaches a terminal state; failures carry an explanatory message
 - [ ] Report under 12,000 characters
 - [ ] `permittedContext` treated as quoted reference material, and optional
