@@ -29,6 +29,7 @@ class Settings:
     model: str
     max_sources: int
     public_url: str
+    canned_delay_seconds: float
 
     @property
     def auth_enabled(self) -> bool:
@@ -71,6 +72,16 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     except ValueError as exc:
         raise ConfigurationError("RESEARCH_MAX_SOURCES is not an integer") from exc
 
+    # Only affects the keyless canned provider. It exists so a client can be
+    # exercised against realistic minute-scale timing — progress arriving over
+    # time, cancelling a task mid-flight — without a model key or a real bill.
+    try:
+        canned_delay_seconds = float(source.get("CANNED_DELAY_SECONDS", "0"))
+    except ValueError as exc:
+        raise ConfigurationError("CANNED_DELAY_SECONDS is not a number") from exc
+    if canned_delay_seconds < 0:
+        raise ConfigurationError("CANNED_DELAY_SECONDS must not be negative")
+
     return Settings(
         api_key=api_key,
         allow_anonymous=allow_anonymous,
@@ -82,6 +93,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         # Inside a VPC this is the Cloud Map private DNS name.
         public_url=(source.get("PUBLIC_URL") or "").strip()
         or f"http://localhost:{source.get('PORT', DEFAULT_PORT)}/",
+        canned_delay_seconds=canned_delay_seconds,
     )
 
 

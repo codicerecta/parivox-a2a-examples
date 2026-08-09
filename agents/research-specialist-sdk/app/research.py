@@ -251,7 +251,11 @@ def _failure_reason(event: object) -> str:
 
 
 def build_provider(
-    *, openai_api_key: str | None, model: str, max_sources: int
+    *,
+    openai_api_key: str | None,
+    model: str,
+    max_sources: int,
+    canned_delay_seconds: float = 0.0,
 ) -> ResearchProvider:
     """Pick a provider based on whether a model key is configured."""
     if openai_api_key:
@@ -260,7 +264,7 @@ def build_provider(
         "No OPENAI_API_KEY configured — serving canned research content. "
         "Protocol behaviour is unchanged; report content is synthetic."
     )
-    return CannedResearchProvider()
+    return CannedResearchProvider(canned_delay_seconds)
 
 
 __all__ = [

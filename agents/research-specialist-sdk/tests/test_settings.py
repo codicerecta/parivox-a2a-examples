@@ -49,3 +49,23 @@ def test_bad_port_is_a_configuration_error():
 def test_openai_key_enables_live_search():
     settings = load_settings({"A2A_API_KEY": "k", "OPENAI_API_KEY": "sk-test"})
     assert settings.can_search is True
+
+
+def test_canned_delay_defaults_to_zero():
+    settings = load_settings({"A2A_API_KEY": "k"})
+    assert settings.canned_delay_seconds == 0.0
+
+
+def test_canned_delay_is_read_from_the_environment():
+    settings = load_settings({"A2A_API_KEY": "k", "CANNED_DELAY_SECONDS": "12.5"})
+    assert settings.canned_delay_seconds == 12.5
+
+
+def test_bad_canned_delay_is_a_configuration_error():
+    with pytest.raises(ConfigurationError):
+        load_settings({"A2A_API_KEY": "k", "CANNED_DELAY_SECONDS": "soon"})
+
+
+def test_negative_canned_delay_is_a_configuration_error():
+    with pytest.raises(ConfigurationError):
+        load_settings({"A2A_API_KEY": "k", "CANNED_DELAY_SECONDS": "-1"})

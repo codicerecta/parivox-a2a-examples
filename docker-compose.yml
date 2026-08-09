@@ -3,11 +3,19 @@ services:
   research-specialist-sdk:
     build: ./agents/research-specialist-sdk
     ports:
-      - "8080:8080"
+      # A2A_HOST_PORT exists because 8080 is a crowded port on a dev machine.
+      # PUBLIC_URL below must track it: the card advertises that URL under
+      # supportedInterfaces, and that is where clients send RPC. Publishing on a
+      # different port than the card names produces a card that resolves and an
+      # RPC call that does not.
+      - "${A2A_HOST_PORT:-8080}:8080"
     environment:
       # Anonymous by default so `docker compose up` just works locally. Deployed
       # instances always set A2A_API_KEY.
       A2A_ALLOW_ANONYMOUS: "1"
-      PUBLIC_URL: "http://localhost:8080/"
+      PUBLIC_URL: "http://localhost:${A2A_HOST_PORT:-8080}/"
       # Passed through when present; absent, the agent serves canned content.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Slows the keyless canned provider so a client can be driven against
+      # realistic minute-scale timing. Ignored when OPENAI_API_KEY is set.
+      CANNED_DELAY_SECONDS: "${CANNED_DELAY_SECONDS:-0}"
