@@ -25,7 +25,17 @@ Parameters:
     Description: ECR image URI including tag.
   ApiKeySecretArn:
     Type: String
-    Description: Secrets Manager ARN holding the shared A2A API key.
+    Description: >-
+      Secrets Manager ARN holding the shared A2A API key. The secret value must
+      be a JSON object keyed by header name, e.g. {"X-API-Key": "..."}. Clients
+      resolve the same secret into request headers, so storing a bare string
+      would need a second secret and rotation would then have to update both.
+  ApiKeySecretJsonKey:
+    Type: String
+    Default: X-API-Key
+    Description: >-
+      JSON key within ApiKeySecretArn holding the key material. Must match the
+      header name ApiKeyMiddleware checks (app/auth.py::API_KEY_HEADER).
   OpenAiSecretArn:
     Type: String
     Default: ''
@@ -172,14 +182,19 @@ Resources:
             # so it has to match the Cloud Map name exactly.
             - Name: PUBLIC_URL
               Value: !Sub 'http://${DiscoveryServiceName}.${DiscoveryNamespaceName}:${ContainerPort}/'
+          # The API key is pulled out of the secret by JSON key rather than
+          # injected whole, so the same secret is directly usable as a client
+          # header map. Ordering matters when changing this: rewrite the secret
+          # value to JSON *before* deploying, or a task restart in between
+          # injects the entire JSON blob as the key and every call 401s.
           Secrets: !If
             - HasOpenAiSecret
             - - Name: A2A_API_KEY
-                ValueFrom: !Ref ApiKeySecretArn
+                ValueFrom: !Sub '${ApiKeySecretArn}:${ApiKeySecretJsonKey}::'
               - Name: OPENAI_API_KEY
                 ValueFrom: !Ref OpenAiSecretArn
             - - Name: A2A_API_KEY
-                ValueFrom: !Ref ApiKeySecretArn
+                ValueFrom: !Sub '${ApiKeySecretArn}:${ApiKeySecretJsonKey}::'
           HealthCheck:
             Command:
               - CMD-SHELL

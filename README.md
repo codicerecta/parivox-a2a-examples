@@ -18,6 +18,13 @@ a Parivox agent can delegate to you.
 The two are implemented independently on purpose. A client that works against both is
 exercising the protocol, not a shared library.
 
+## Writing your own
+
+[**Integrating with Parivox**](docs/integrating-with-parivox.md) covers what a conforming
+A2A agent still has to get right to be a good delegate — keepalive cadence, artifact and
+terminal-state ordering, progress text that a person is reading live, and the handful of
+current client constraints that the protocol itself permits you to violate.
+
 ## Protocol notes (A2A 1.0)
 
 Verified against `a2a-sdk` 1.1.2. These bite immediately if you are used to 0.3:
