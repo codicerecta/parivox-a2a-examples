@@ -147,6 +147,71 @@ It appears in a chat panel that a customer is reading, while they wait. Write it
 - **Sane cadence.** One update for the whole run reads as a hang. Forty reads as spam.
   Roughly one line per meaningful step of work.
 
+### Say how long you take — optional, and worth more than it looks
+
+Two places to declare a duration. Both are optional, both are ignored by any client that
+has not heard of them, and declaring neither leaves you exactly where you were.
+
+**On your card**, as an extension. An `AgentCard` has no `metadata` field, so
+`capabilities.extensions[]` is the only place this can live:
+
+```json
+"capabilities": {
+  "streaming": true,
+  "extensions": [
+    {
+      "uri": "https://parivox.net/a2a/extensions/duration/v1",
+      "description": "Typical wall-clock duration of a task, in seconds.",
+      "required": false,
+      "params": { "typicalSeconds": 75 }
+    }
+  ]
+}
+```
+
+Keep `required` false. It is a hint, not a dependency.
+
+**On a task**, in the metadata of a status update, when you know something the card
+cannot:
+
+```json
+"statusUpdate": {
+  "taskId": "...",
+  "status": { "state": "TASK_STATE_WORKING" },
+  "metadata": {
+    "https://parivox.net/a2a/extensions/duration/v1": { "estimatedSeconds": 120 }
+  }
+}
+```
+
+The flat spelling `"https://parivox.net/a2a/extensions/duration/v1/estimatedSeconds": 120`
+is read too, as is the same object on the status *message*'s metadata, and `typicalSeconds`
+is accepted wherever `estimatedSeconds` is. A polled (non-streaming) task is read from
+`Task.metadata` instead, since it has no update to carry one.
+
+What the caller does with it:
+
+- **Says something truer.** "It usually takes about a minute" instead of "I'll come back
+  to you as soon as it has something."
+- **Decides whether to wait at all.** Parivox waits a few seconds for a fast answer before
+  announcing a handoff, and answers inline if you beat it — under about ten seconds the
+  announcement costs the participant more time than your work does. Declaring a duration
+  longer than that window ends the wait immediately, which is what you want if you take a
+  minute: the acknowledgement is spoken straight away instead of after a silence.
+- **Tells the model what a handoff costs**, before it decides to make one.
+
+Two things worth being careful about, both of which follow from it being *your* number:
+
+- **Declare what this deployment actually does.** `app/settings.py::_derive_typical_duration`
+  in this repository derives it from the provider that will really run, because the same
+  agent with a model key and without one differ by an order of magnitude.
+- **Only emit a per-task estimate when you know one.** `app/research.py` declares
+  `estimated_seconds = None` for live web search on purpose. No estimate is better than an
+  invented one, because the caller acts on it.
+
+A declared duration can only ever *shorten* the caller's wait, never lengthen it. That is
+deliberate: a number you control should not be able to hold a room silent.
+
 ### Return markdown, and keep it under 12,000 characters
 
 The artifact is posted to chat verbatim and injected into the room agent's context, so
@@ -258,6 +323,7 @@ reading only the specification will walk into them.
 - [ ] `supportedInterfaces` advertises a `JSONRPC` binding at the URL you really listen on
 - [ ] `capabilities.streaming` matches what you actually implement, either way
 - [ ] Card `version` changes when behaviour changes
+- [ ] Typical duration declared on the card, if you know it — and true of *this* deployment
 - [ ] `X-API-Key` (or another fixed header) accepted on RPC calls
 - [ ] Keepalive status emitted every ~20s, with no message part — for the human, not the
       connection
@@ -279,5 +345,6 @@ reading only the specification will walk into them.
 |---|---|
 | Task lifecycle, keepalives, terminal states | `app/executor.py` |
 | Progress cadence, report structure, failure reasons | `app/research.py` |
-| Card contents and the advertised RPC URL | `app/card.py`, `app/settings.py` |
+| Card contents, the advertised RPC URL, the duration extension | `app/card.py`, `app/settings.py` |
+| Per-task estimate on the first status update | `app/executor.py::ResearchExecutor._start_work` |
 | Header authentication, and what stays public | `app/auth.py` |

@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Sequence
 import pytest
 from a2a.types import a2a_pb2 as pb
 
+from app.card import DURATION_EXTENSION_URI
 from app.executor import REPORT_ARTIFACT_NAME, ResearchExecutor
 from app.research import CannedResearchProvider, ResearchEvent
 
@@ -87,6 +88,46 @@ async def test_artifact_carries_the_report():
     assert len(artifacts) == 1
     assert artifacts[0].artifact.name == REPORT_ARTIFACT_NAME
     assert "## Sources" in artifacts[0].artifact.parts[0].text
+
+
+async def test_the_first_status_carries_a_per_task_estimate():
+    # The refinement half of the duration convention: the card says what this
+    # agent usually costs, this says what this task will.
+    queue = FakeEventQueue()
+    await ResearchExecutor(CannedResearchProvider(delay_seconds=1.0)).execute(
+        FakeContext(), queue
+    )
+
+    working = [
+        e
+        for e in queue.events
+        if isinstance(e, pb.TaskStatusUpdateEvent)
+        and e.status.state == pb.TaskState.TASK_STATE_WORKING
+    ]
+    estimate = working[0].metadata[DURATION_EXTENSION_URI]["estimatedSeconds"]
+    assert estimate == 2.5
+
+
+async def test_a_provider_that_cannot_estimate_declares_nothing():
+    # Live web research does not know how long it will take, and a guess a
+    # caller acts on is worse than silence.
+    class UnknowingProvider:
+        estimated_seconds = None
+
+        async def research(self, question, permitted_context):
+            yield ResearchEvent(kind="report", text="# done", sources=[])
+
+    queue = FakeEventQueue()
+    await ResearchExecutor(UnknowingProvider()).execute(FakeContext(), queue)
+
+    working = [
+        e
+        for e in queue.events
+        if isinstance(e, pb.TaskStatusUpdateEvent)
+        and e.status.state == pb.TaskState.TASK_STATE_WORKING
+    ]
+    assert working, "the task still starts work"
+    assert DURATION_EXTENSION_URI not in working[0].metadata
 
 
 async def test_provider_failure_terminates_the_task_as_failed():

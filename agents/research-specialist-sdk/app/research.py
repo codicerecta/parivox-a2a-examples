@@ -48,6 +48,13 @@ class ResearchEvent:
 class ResearchProvider(Protocol):
     """Anything that can answer a question with a cited report, reporting progress."""
 
+    # How long this provider expects a run to take, or None when it genuinely
+    # does not know. The executor turns it into a per-task estimate on the first
+    # status update, so "None" is the honest answer for live web research and
+    # the right one to give: a made-up estimate is worse than no estimate,
+    # because a caller acts on it.
+    estimated_seconds: float | None
+
     async def research(
         self, question: str, permitted_context: Sequence[str]
     ) -> AsyncIterator[ResearchEvent]:  # pragma: no cover - protocol definition
@@ -103,6 +110,10 @@ class CannedResearchProvider:
 
     def __init__(self, delay_seconds: float = 0.0) -> None:
         self._delay = delay_seconds
+        # Knowable exactly here: two progress steps, each preceded by the
+        # configured delay. This is the one provider that can honestly answer
+        # "how long will this task take", which is why it is the one that does.
+        self.estimated_seconds: float | None = 2 * delay_seconds + 0.5
 
     async def research(
         self, question: str, permitted_context: Sequence[str]
@@ -141,6 +152,13 @@ class CannedResearchProvider:
 
 class OpenAIResearchProvider:
     """Live web research via the OpenAI Responses API with the `web_search` tool."""
+
+    # Deliberately None. How long a web search and a model run take varies with
+    # the question by a factor of several, and this provider has no way to know
+    # before it starts. The card still declares a typical duration, which is a
+    # weaker claim and an honest one; a per-task estimate invented here would be
+    # a guess a caller acts on.
+    estimated_seconds: float | None = None
 
     def __init__(self, api_key: str, model: str, max_sources: int = 8) -> None:
         self._api_key = api_key

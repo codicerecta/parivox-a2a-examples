@@ -5,8 +5,9 @@ import json
 from starlette.testclient import TestClient
 
 from app.auth import API_KEY_HEADER
+from app.card import DURATION_EXTENSION_URI, build_agent_card
 from app.main import build_app
-from app.settings import load_settings
+from app.settings import CANNED_TYPICAL_DURATION_SECONDS, load_settings
 
 CARD_PATH = "/.well-known/agent-card.json"
 STREAM_BODY = {
@@ -47,6 +48,29 @@ def test_card_advertises_a_jsonrpc_interface():
 
     assert interface["protocolBinding"] == "JSONRPC"
     assert interface["protocolVersion"] == "1.0"
+
+
+def test_card_declares_how_long_work_usually_takes():
+    # The optional Parivox convention, carried on the protocol's own extension
+    # point because an AgentCard has nowhere else to put it.
+    card = anonymous_client().get(CARD_PATH).json()
+    declared = [
+        e for e in card["capabilities"]["extensions"] if e["uri"] == DURATION_EXTENSION_URI
+    ]
+
+    assert len(declared) == 1
+    assert declared[0]["params"]["typicalSeconds"] == CANNED_TYPICAL_DURATION_SECONDS
+    # Never required: a client that has never heard of this must still be able
+    # to call the agent.
+    assert declared[0].get("required", False) is False
+
+
+def test_a_card_can_still_be_built_without_a_duration():
+    # What an agent that declines to declare one publishes, which is also what
+    # this agent published before the convention existed.
+    card = build_agent_card("http://x/", auth_enabled=False)
+
+    assert list(card.capabilities.extensions) == []
 
 
 def test_card_declares_the_api_key_scheme_when_auth_is_on():
