@@ -21,6 +21,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import a2a_pb2 as pb
 
+from .card import DURATION_EXTENSION_URI
 from .research import ResearchEvent, ResearchProvider
 
 logger = logging.getLogger("a2a.executor")
@@ -77,7 +78,7 @@ class ResearchExecutor(AgentExecutor):
             await _fail(updater, "No question was provided to research.")
             return
 
-        await updater.start_work()
+        await self._start_work(updater)
         logger.info("Researching: %s", question[:200])
 
         produced_report = False
@@ -112,6 +113,29 @@ class ResearchExecutor(AgentExecutor):
             return
 
         await updater.complete()
+
+    async def _start_work(self, updater: TaskUpdater) -> None:
+        """The first WORKING status, carrying a per-task estimate when there is one.
+
+        The card says how long this agent usually takes; this says how long *this*
+        task will take, which is the more useful number when the two differ. It
+        is emitted only when the provider genuinely knows — repeating the card's
+        figure here would look like a refinement and be nothing of the kind.
+
+        The estimate goes in the status update's own metadata rather than on a
+        message, because the update is where it belongs and a message-less
+        WORKING status is also what this agent's keepalives look like.
+        `TaskUpdater.start_work()` takes no metadata in a2a-sdk 1.1.2, so this
+        calls `update_status` directly; the two are otherwise identical.
+        """
+        estimate = getattr(self._provider, "estimated_seconds", None)
+        if not estimate:
+            await updater.start_work()
+            return
+        await updater.update_status(
+            pb.TaskState.TASK_STATE_WORKING,
+            metadata={DURATION_EXTENSION_URI: {"estimatedSeconds": float(estimate)}},
+        )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)

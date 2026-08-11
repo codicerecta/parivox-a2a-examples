@@ -32,7 +32,11 @@ async def _healthz(_request) -> JSONResponse:
 
 def build_app(settings: Settings) -> Starlette:
     """Assemble the ASGI application for the given settings."""
-    card = build_agent_card(settings.public_url, auth_enabled=settings.auth_enabled)
+    card = build_agent_card(
+        settings.public_url,
+        auth_enabled=settings.auth_enabled,
+        typical_duration_seconds=settings.typical_duration_seconds,
+    )
     provider = build_provider(
         openai_api_key=settings.openai_api_key,
         model=settings.model,

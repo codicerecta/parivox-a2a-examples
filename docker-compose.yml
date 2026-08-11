@@ -19,3 +19,8 @@ services:
       # Slows the keyless canned provider so a client can be driven against
       # realistic minute-scale timing. Ignored when OPENAI_API_KEY is set.
       CANNED_DELAY_SECONDS: "${CANNED_DELAY_SECONDS:-0}"
+      # Overrides the duration declared on the card, which is otherwise derived
+      # from whichever provider is really running. Set it to lie to a client on
+      # purpose — a card that claims to be fast and is not is exactly the case
+      # worth being able to reproduce.
+      TYPICAL_DURATION_SECONDS: "${TYPICAL_DURATION_SECONDS:-}"

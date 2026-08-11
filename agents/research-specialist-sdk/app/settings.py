@@ -12,6 +12,15 @@ from dataclasses import dataclass
 
 DEFAULT_MODEL = "gpt-4.1"
 DEFAULT_PORT = 8080
+# What a live-search run of this agent typically costs in wall-clock seconds,
+# measured against the OpenAI provider rather than guessed. It is declared on
+# the Agent Card so a caller can decide what to say — and whether to wait —
+# before it sends anything.
+LIVE_TYPICAL_DURATION_SECONDS = 75.0
+# The floor for the canned provider, which answers as fast as it is asked. A
+# caller that races a few seconds for an inline answer wins that race against
+# this configuration, which is the point of declaring it honestly.
+CANNED_TYPICAL_DURATION_SECONDS = 2.0
 
 
 class ConfigurationError(RuntimeError):
@@ -30,6 +39,12 @@ class Settings:
     max_sources: int
     public_url: str
     canned_delay_seconds: float
+    # Declared on the Agent Card. Derived from how this instance is actually
+    # configured rather than fixed, because a live-search deployment and a
+    # canned one differ by an order of magnitude and a single number would be
+    # wrong for both — which is the failure mode a declared duration exists to
+    # avoid.
+    typical_duration_seconds: float
 
     @property
     def auth_enabled(self) -> bool:
@@ -82,11 +97,24 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     if canned_delay_seconds < 0:
         raise ConfigurationError("CANNED_DELAY_SECONDS must not be negative")
 
+    openai_api_key = (source.get("OPENAI_API_KEY") or "").strip() or None
+    try:
+        typical_duration_seconds = float(
+            source.get("TYPICAL_DURATION_SECONDS")
+            or _derive_typical_duration(
+                can_search=bool(openai_api_key), canned_delay_seconds=canned_delay_seconds
+            )
+        )
+    except ValueError as exc:
+        raise ConfigurationError("TYPICAL_DURATION_SECONDS is not a number") from exc
+    if typical_duration_seconds <= 0:
+        raise ConfigurationError("TYPICAL_DURATION_SECONDS must be positive")
+
     return Settings(
         api_key=api_key,
         allow_anonymous=allow_anonymous,
         port=port,
-        openai_api_key=(source.get("OPENAI_API_KEY") or "").strip() or None,
+        openai_api_key=openai_api_key,
         model=(source.get("RESEARCH_MODEL") or "").strip() or DEFAULT_MODEL,
         max_sources=max_sources,
         # Advertised in the Agent Card so clients know where to send RPC calls.
@@ -94,7 +122,28 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         public_url=(source.get("PUBLIC_URL") or "").strip()
         or f"http://localhost:{source.get('PORT', DEFAULT_PORT)}/",
         canned_delay_seconds=canned_delay_seconds,
+        typical_duration_seconds=typical_duration_seconds,
     )
 
 
-__all__ = ["ConfigurationError", "Settings", "load_settings"]
+def _derive_typical_duration(*, can_search: bool, canned_delay_seconds: float) -> float:
+    """How long this configuration actually takes, as far as it can be known.
+
+    Declaring a duration is only worth doing if the number is true, so it is
+    computed from the provider that will really run rather than written down
+    once. The canned provider sleeps its delay before each of two progress
+    steps, so its cost is knowable exactly; live search is not, and 75 seconds
+    is what the OpenAI provider has been observed to take.
+    """
+    if can_search:
+        return LIVE_TYPICAL_DURATION_SECONDS
+    return max(CANNED_TYPICAL_DURATION_SECONDS, 2 * canned_delay_seconds + 1.0)
+
+
+__all__ = [
+    "CANNED_TYPICAL_DURATION_SECONDS",
+    "LIVE_TYPICAL_DURATION_SECONDS",
+    "ConfigurationError",
+    "Settings",
+    "load_settings",
+]
