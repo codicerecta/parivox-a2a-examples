@@ -25,32 +25,30 @@ is watching in real time. Nearly every expectation below follows from that diffe
 Get these wrong and the delegation fails, usually in a way that looks like your agent being
 down.
 
-### Emit something at least every 30 seconds
+### Emit something every 30 seconds — a courtesy, not a requirement
 
-The calling client times out on the gap **between events**, not on total duration — a
-reasonable design, because a silent stream is indistinguishable from a dead one. That
-budget is 90 seconds.
+**Corrected 2026-08-09.** This section used to say a quiet stream is cut off at 90 seconds,
+and it was true: the client timed out on the gap **between events** rather than on total
+duration, so an agent that thought hard for two minutes and then answered perfectly was
+well-formed and failed anyway — intermittently, depending on the model, the query and the
+day. That is fixed. The read timeout no longer undercuts the delegation's configured
+wall-clock budget, so silence inside your budget is fine and nothing in this guide obliges
+you to emit periodic updates.
 
-Nothing in the specification obliges you to emit periodic updates, so an agent that thinks
-hard for two minutes and then answers perfectly is entirely well-formed and will still fail.
-Worse, it will fail *intermittently*, because whether any given run goes quiet for too long
-depends on the model, the query, and the day.
-
-Do not make stream survival a property of how talkative your model happens to be. Emit a
-keepalive on a timer, independent of whatever work is in flight:
+Send keepalives anyway, for a reason that has nothing to do with the connection: **a person
+is watching.** Four minutes of nothing in the chat panel reads as a delegation that died,
+whatever the client believes. Emit one on a timer, independent of whatever work is in flight:
 
 - Send a `WORKING` status update **with no message part**. Parivox treats a status update
-  carrying no message text as a liveness signal, not as progress, so it resets the read
-  timeout without putting an empty line in front of a participant.
-- 20 seconds is a good interval — comfortably inside the budget, cheap, and it leaves room
-  for one dropped frame.
+  carrying no message text as a liveness signal, not as progress, so it does not put an
+  empty line in front of a participant.
+- 20 seconds is a good interval — cheap, and it leaves room for one dropped frame.
 
 `agents/research-specialist-sdk/app/executor.py` implements this as `_with_heartbeat`. It
 drains the research provider through a queue, because an async generator cannot be polled
 with a timeout — awaiting the next item commits you to waiting however long the model takes.
 
-This keeps a *live* task alive. It is not a way to keep a stuck one alive forever; the
-caller still enforces a wall-clock bound.
+The caller still enforces a wall-clock bound, and that bound is now the only one.
 
 ### Send the report before the terminal status
 
@@ -103,11 +101,25 @@ the published one is the classic version — card discovery succeeds, everything
 and every call misses. Derive it from the same configuration that determines where you
 actually listen.
 
-### Support streaming
+### Declare `capabilities.streaming` honestly — either answer is now supported
 
-The client always calls `SendStreamingMessage`. It reads `capabilities.streaming` from your
-card but does not currently gate on it, so a non-streaming agent is not rejected cleanly —
-it simply fails. Declare streaming honestly and implement it.
+**Corrected 2026-08-09.** This section used to say the client always calls
+`SendStreamingMessage` and does not gate on the flag, so a non-streaming agent simply failed.
+It gates on it now. Declare `streaming: false` and the client uses `SendMessage` followed by
+`GetTask` polling instead; you never see a `SendStreamingMessage`.
+
+What is still load-bearing is that the flag be *true*. It is read from your card before any
+call is made, so declaring streaming you do not implement gets you a method you cannot serve,
+and declaring none you do implement costs a participant granularity — polled progress appears
+at the poll interval and only when your status message text changes.
+
+Two notes for the non-streaming path:
+
+- `GetTask` is called with `{"id": "<task id>"}`. The task you return from `SendMessage` must
+  carry an `id`, or there is nothing to poll and the delegation fails immediately.
+- Answering `SendMessage` with a bare `Message` instead of a `Task` is supported, and treated
+  as the finished report. If your work is short enough not to need a task lifecycle, this is
+  the least ceremony available.
 
 ### Accept a static header credential
 
@@ -163,9 +175,36 @@ Do not *require* it. Most delegations pass none at all.
 ### Assume the question stands alone
 
 You get no room access, no participant list, no conversation history, and no subscription to
-anything. The room agent is instructed to write self-contained questions. Do not design
-around follow-up turns or clarifying questions — there is nobody on the other end to answer
-them mid-task.
+anything. The room agent is instructed to write self-contained questions.
+
+`TASK_STATE_INPUT_REQUIRED` is handled as of August 2026, but not as a conversation. Enter it
+and the client stops reading, relays your status message into the room as a question, and puts
+it in front of the model — so the participant may well answer, and the room agent may well ask
+you again in a **fresh task** with more detail. Your paused task is abandoned, not resumed and
+not cancelled. So it is worth asking a good question when you genuinely cannot proceed, and it
+is not worth designing around a multi-turn exchange, because there will not be one.
+
+### Return text, a file, or structured data — all three arrive now
+
+**Corrected 2026-08-09.** Until then the client read only `parts[].text`, so a file or data
+part produced an empty report and the delegation was announced as a failure, silently.
+
+A2A 1.0's `Part` is a single message with a `content` oneof — `text`, `raw` (base64 bytes),
+`url` — plus `data`, `filename` and `mediaType`. What each one does now:
+
+| Part carries | What reaches the room |
+|---|---|
+| `text` | Verbatim. Still the right default for a report |
+| `raw` + a textual `mediaType`, under 20 KB | Decoded and inlined |
+| `raw`, binary or unlabelled, or over 20 KB | Described, not decoded |
+| `data` | Rendered as a fenced JSON block, capped at 2,000 characters |
+| `url` | **Rendered as a link. The address is never fetched** |
+
+That last row is deliberate and will not change: Parivox room agents run inside a VPC whose
+network position is the point of the trust boundary between us, so dereferencing an address
+of your choosing from there is not something we will do for you. If the participant needs to
+see something, either put it in the artifact or expect them to open the link themselves —
+from their own browser, on their own network.
 
 ### Bound your own runtime
 
@@ -195,18 +234,34 @@ reading only the specification will walk into them.
 - **No resubscription and no retry.** If the connection dies mid-task the delegation is
   abandoned and announced as a failure. It will not reconnect, and it will not call
   `SubscribeToTask` to resume, so a task that survives on your side is not recoverable.
-- **`capabilities.streaming` is not enforced**, as noted above.
 - **Skills declared on the card are informational.** The client parses them and does not
   currently route on them.
+- **`CancelTask` is never sent.** Whether the caller times out, the room closes, or you pause
+  for input, your task is abandoned where it stands. Nothing tells you to stop.
+- **OAuth is not supported.** A fixed header credential is the only scheme; see above.
+- **Progress text is rewritten before display.** Newlines and other whitespace collapse to
+  single spaces, Unicode control and format characters are dropped, and the line is cut at 300
+  characters. It goes into a panel a customer is reading, so it is treated as untrusted. Send
+  one short single-line sentence and this changes nothing.
+- **URLs in progress text are replaced with `[link removed]`.** Anything the chat panel would
+  turn into a clickable link — a bare `http(s)://` or `www.` run — is stripped, because a status
+  line from an agent we did not write is not something a participant should be invited to click.
+  A scheme-less mention like `uscis.gov` survives, since the panel does not linkify it either.
+  **Put your sources in the artifact, not in the progress line**, where they keep working links
+  and are the payoff the delegation exists to deliver.
+- **A relayed clarifying question is cut at 600 characters**, under the same whitespace and
+  control-character treatment. Links in it currently survive; do not rely on that either way.
 
 ## Checklist
 
 - [ ] Card at `/.well-known/agent-card.json`, served unauthenticated
 - [ ] `supportedInterfaces` advertises a `JSONRPC` binding at the URL you really listen on
-- [ ] `capabilities.streaming` is true, and true
+- [ ] `capabilities.streaming` matches what you actually implement, either way
 - [ ] Card `version` changes when behaviour changes
 - [ ] `X-API-Key` (or another fixed header) accepted on RPC calls
-- [ ] Keepalive status emitted every ~20s, with no message part
+- [ ] Keepalive status emitted every ~20s, with no message part — for the human, not the
+      connection
+- [ ] If non-streaming: the task returned by `SendMessage` carries an `id`
 - [ ] Progress lines are short, human-readable, one per meaningful step
 - [ ] One markdown artifact, emitted before the terminal status — whole, or chunked under a
       stable `artifactId` and closed with `lastChunk`
