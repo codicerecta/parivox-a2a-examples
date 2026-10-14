@@ -112,6 +112,8 @@ lower than the enforced result.
 
 ## Deployment
 
+The setup described below reflects Parivox's deployment architecture as an example; modify and adapt it as needed for your own infrastructure requirements.
+
 Each agent has its own CloudFormation stack under `infra/` and deploys as a single-replica
 ECS Fargate service, discoverable through AWS Cloud Map private DNS.
 
