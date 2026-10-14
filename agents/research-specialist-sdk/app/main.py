@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 
-from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.utils.constants import DEFAULT_RPC_URL
@@ -20,6 +19,7 @@ from starlette.routing import Route
 from .auth import ApiKeyMiddleware
 from .card import build_agent_card
 from .executor import ResearchExecutor
+from .handler import ConformingRequestHandler
 from .research import build_provider
 from .settings import Settings, load_settings
 
@@ -43,7 +43,7 @@ def build_app(settings: Settings) -> Starlette:
         max_sources=settings.max_sources,
         canned_delay_seconds=settings.canned_delay_seconds,
     )
-    handler = DefaultRequestHandler(
+    handler = ConformingRequestHandler(
         agent_executor=ResearchExecutor(provider),
         task_store=InMemoryTaskStore(),
         agent_card=card,

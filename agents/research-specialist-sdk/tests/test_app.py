@@ -130,3 +130,49 @@ def test_stream_runs_the_full_task_lifecycle():
 
 def test_healthz():
     assert anonymous_client().get("/healthz").json() == {"status": "ok"}
+
+
+def test_subscribe_to_terminal_task_returns_unsupported_operation_error():
+    client = anonymous_client()
+    resp = client.post("/", json=STREAM_BODY, headers=VERSION_HEADERS)
+    first_frame = json.loads(resp.text.splitlines()[0][len("data: ") :])
+    task_id = first_frame["result"]["task"]["id"]
+
+    sub_resp = client.post(
+        "/",
+        json={
+            "jsonrpc": "2.0",
+            "id": "sub-1",
+            "method": "SubscribeToTask",
+            "params": {"id": task_id},
+        },
+        headers=VERSION_HEADERS,
+    )
+    assert sub_resp.json()["error"]["code"] == -32004
+
+
+def test_send_message_to_terminal_task_returns_unsupported_operation_error():
+    client = anonymous_client()
+    resp = client.post("/", json=STREAM_BODY, headers=VERSION_HEADERS)
+    first_frame = json.loads(resp.text.splitlines()[0][len("data: ") :])
+    task_id = first_frame["result"]["task"]["id"]
+
+    send_resp = client.post(
+        "/",
+        json={
+            "jsonrpc": "2.0",
+            "id": "send-2",
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "messageId": "m2",
+                    "taskId": task_id,
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "follow-up"}],
+                }
+            },
+        },
+        headers=VERSION_HEADERS,
+    )
+    assert send_resp.json()["error"]["code"] == -32004
+
